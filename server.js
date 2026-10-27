@@ -32,11 +32,19 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
 let KEY = null, TOKEN = null;
 function loadKey() {
   if (KEY) return KEY;
-  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) KEY = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
-  else if (fs.existsSync(KEY_FILE)) KEY = JSON.parse(fs.readFileSync(KEY_FILE, 'utf8'));
-  else throw httpErr(500, 'Service account key not found. Put it at ' + KEY_FILE + ' or set GOOGLE_APPLICATION_CREDENTIALS.');
-  if (!KEY.client_email || !KEY.private_key) throw httpErr(500, 'Service account key file is missing client_email / private_key.');
-  return KEY;
+  let raw = (process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '').trim(), k;
+  if (raw) {
+    // Accept the JSON as pasted, wrapped in quotes, or base64-encoded
+    if (/^['"]/.test(raw) && raw.endsWith(raw[0])) raw = raw.slice(1, -1);
+    if (!raw.startsWith('{')) { try { raw = Buffer.from(raw, 'base64').toString('utf8'); } catch (e) {} }
+    try { k = JSON.parse(raw); } catch (e) { throw httpErr(500, 'GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON - paste the whole key file content.'); }
+  } else if (fs.existsSync(KEY_FILE)) k = JSON.parse(fs.readFileSync(KEY_FILE, 'utf8'));
+  else throw httpErr(500, 'Service account key not found. Set GOOGLE_SERVICE_ACCOUNT_JSON or put the key at ' + KEY_FILE + '.');
+  if (!k.client_email || !k.private_key) throw httpErr(500, 'Service account key is missing client_email / private_key.');
+  // Env-var editors often turn real line breaks into literal "\n" text (or add \r) - repair them
+  k.private_key = k.private_key.replace(/\\n/g, '\n').replace(/\r/g, '').trim() + '\n';
+  try { crypto.createPrivateKey(k.private_key); } catch (e) { throw httpErr(500, 'private_key in the service account key is damaged (' + e.message + '). Paste the key JSON again.'); }
+  return KEY = k;
 }
 const b64u = b => Buffer.from(b).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
 async function token() {
@@ -50,7 +58,12 @@ async function token() {
     body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: unsigned + '.' + b64u(sig) }),
   });
   const j = await r.json();
-  if (!r.ok) throw httpErr(502, 'Google sign-in failed: ' + (j.error_description || j.error || r.status));
+  if (!r.ok) {
+    let m = j.error_description || j.error || String(r.status);
+    if (/invalid jwt signature|invalid_grant/i.test(m)) m += ' - Google does not accept key ' + (k.private_key_id || '?') + ' for ' + k.client_email +
+      '. The key was deleted/disabled in Google Cloud (Google auto-disables keys found in public repos) or belongs to another service account. Create a new JSON key and update GOOGLE_SERVICE_ACCOUNT_JSON.';
+    throw httpErr(502, 'Google sign-in failed: ' + m);
+  }
   TOKEN = { v: j.access_token, exp: Date.now() + j.expires_in * 1000 };
   return TOKEN.v;
 }
@@ -109,7 +122,11 @@ http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
   try {
     let m;
-    if (u.pathname == '/api/health') return send(res, 200, JSON.stringify({ ok: true, sheets: Object.keys(SHEETS) }));
+    if (u.pathname == '/api/health') {
+      let key = {}; try { const k = loadKey(); key = { client_email: k.client_email, private_key_id: k.private_key_id, source: process.env.GOOGLE_SERVICE_ACCOUNT_JSON ? 'env GOOGLE_SERVICE_ACCOUNT_JSON' : 'file' }; } catch (e) { key = { error: e.message }; }
+      let google = 'ok'; try { await token(); } catch (e) { google = e.message; }
+      return send(res, 200, JSON.stringify({ ok: google == 'ok', sheets: Object.keys(SHEETS), key, google }, null, 2));
+    }
     if ((m = u.pathname.match(/^\/api\/sheet\/(\w+)$/))) {
       if (!SHEETS[m[1]]) return send(res, 404, JSON.stringify({ error: 'Unknown sheet' }));
       const gz = await cached(m[1], u.searchParams.has('fresh'));
