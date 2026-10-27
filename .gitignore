@@ -1,0 +1,21 @@
+# Secrets – never commit
+service-account.json
+*.key.json
+.env
+.env.*
+!.env.example
+
+# Original design file (contains embedded employee data)
+Attrition Dashboard + TA Funnel.html
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Logs / OS / editor
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

@@ -1,0 +1,15 @@
+{
+  "name": "attrition-ta-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Attrition + TA Dashboard – live HR dashboard backed by Google Sheets via a service account",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}
